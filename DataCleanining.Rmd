@@ -1,0 +1,178 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+plot(cars)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(readr)
+library(readxl)
+
+df <- read_excel("amazondelivery.xlsx", sheet = "amazondelivery2")
+
+# loading the first 10 rows and all columns of the data set, looking at data types per column and all column names
+df
+str(df)
+```
+```{r}
+# Ensure it's a data frame
+df <- as.data.frame(df)
+
+# Count missing values per column
+missing_counts <- colSums(is.na(df))
+print("Missing Values per Column:")
+print(missing_counts)
+
+# Identify rows with missing values
+missing_rows <- df[rowSums(is.na(df)) > 0, ]
+
+# Print the number of rows with missing values
+print(paste("Total rows with missing values:", nrow(missing_rows)))
+
+# Remove rows with missing values
+df_clean <- df %>% na.omit()
+
+# Print number of rows removed
+print(paste("Total rows removed:", nrow(df) - nrow(df_clean)))
+```
+```{r}
+# Convert Order_Time and Pickup_Time to proper time format
+df <- df %>%
+  mutate(Order_Time = hms::as_hms(Order_Time),
+         Pickup_Time = hms::as_hms(Pickup_Time)) # we won't analyze realistic times since there is no pick up date
+
+# Count occurrences for each condition
+count_delivery_time <- sum(df$Delivery_Time > 240 | df$Delivery_Time < 2, na.rm = TRUE)
+count_agent_age <- sum(df$Agent_Age < 16 | df$Agent_Age > 90, na.rm = TRUE)
+count_agent_rating <- sum(df$Agent_Rating < 0 | df$Agent_Rating > 5, na.rm = TRUE)
+count_invalid_latitudes <- sum(df$Store_Latitude < -90 | df$Store_Latitude > 90 |
+                               df$Drop_Latitude < -90 | df$Drop_Latitude > 90, na.rm = TRUE)
+
+# Print counts for each condition
+print(paste("Rows to be deleted (Delivery Time issue):", count_delivery_time))
+print(paste("Rows to be deleted (Agent Age issue):", count_agent_age))
+print(paste("Rows to be deleted (Agent Rating issue):", count_agent_rating))
+print(paste("Rows to be deleted (Invalid Latitudes):", count_invalid_latitudes))
+
+# Remove rows that meet any of these conditions
+df_cleaned <- df %>%
+  filter(Delivery_Time >= 2 & Delivery_Time <= 240,
+         Agent_Age >= 16 & Agent_Age <= 90,
+         Agent_Rating >= 0 & Agent_Rating <= 5,
+         Store_Latitude >= -90 & Store_Latitude <= 90,
+         Drop_Latitude >= -90 & Drop_Latitude <= 90)
+
+# Print the total number of rows removed
+rows_removed <- nrow(df) - nrow(df_cleaned)
+print(paste("Total rows removed:", rows_removed))
+```
+```{r}
+sum(duplicated(df))  # Count duplicates
+df <- df[!duplicated(df), ]  # Remove duplicates
+
+summary(df$Delivery_Time)  # Look for weird values
+
+unique(df$Weather)  # See unique values
+
+unique(df$Traffic)  # See unique values
+sum(df$Traffic == "nan", na.rm = TRUE)
+
+
+unique(df$Vehicle)  # See unique values
+
+unique(df$Area)  # See unique values
+
+unique(df$Category)  # See unique values
+
+summary(df$Order_Date) # Sanity check 
+summary(df$Order_Time)
+summary(df$Pickup_Time)
+
+colSums(is.na(df))  # Should all be 0
+```
+```{r}
+# Remove rows where Traffic is "nan"
+df <- df[df$Traffic != "nan", ]
+
+# Confirm the rows were deleted
+sum(df$Traffic == "nan")  # Should return 0
+
+write.csv(df_cleaned, "amazondelivery2_cleaned.csv", row.names = FALSE)
+```
+
+
+```{r}
+# Ensure all latitude values are positive
+df$Store_Latitude <- abs(df$Store_Latitude)
+df$Drop_Latitude <- abs(df$Drop_Latitude)
+
+# Ensure longitude values are within a reasonable range (-180 to 180)
+df$Store_Longitude <- ifelse(df$Store_Longitude < -180 | df$Store_Longitude > 180, NA, df$Store_Longitude)
+df$Drop_Longitude <- ifelse(df$Drop_Longitude < -180 | df$Drop_Longitude > 180, NA, df$Drop_Longitude)
+
+# Ensure latitude values are within a reasonable range (0 to 90)
+df$Store_Latitude <- ifelse(df$Store_Latitude > 90, NA, df$Store_Latitude)
+df$Drop_Latitude <- ifelse(df$Drop_Latitude > 90, NA, df$Drop_Latitude)
+
+# Identify swapped coordinates and correct them (if latitude values look like longitudes and vice versa)
+df <- df %>%
+  mutate(
+    Store_Latitude = ifelse(Store_Latitude > 90 | Store_Latitude < 0, abs(Store_Longitude), Store_Latitude),
+    Store_Longitude = ifelse(Store_Longitude < -180 | Store_Longitude > 180, abs(Store_Latitude), Store_Longitude),
+    Drop_Latitude = ifelse(Drop_Latitude > 90 | Drop_Latitude < 0, abs(Drop_Longitude), Drop_Latitude),
+    Drop_Longitude = ifelse(Drop_Longitude < -180 | Drop_Longitude > 180, abs(Drop_Latitude), Drop_Longitude)
+  )
+
+# Reassign values to ensure they are stored correctly
+df$Store_Latitude <- abs(df$Store_Latitude)
+df$Drop_Latitude <- abs(df$Drop_Latitude)
+
+# Display minimum and maximum latitude/longitude after correction
+print(paste("Minimum Store Latitude:", min(df$Store_Latitude, na.rm = TRUE)))
+print(paste("Maximum Store Latitude:", max(df$Store_Latitude, na.rm = TRUE)))
+print(paste("Minimum Drop Latitude:", min(df$Drop_Latitude, na.rm = TRUE)))
+print(paste("Maximum Drop Latitude:", max(df$Drop_Latitude, na.rm = TRUE)))
+print(paste("Minimum Store Longitude:", min(df$Store_Longitude, na.rm = TRUE)))
+print(paste("Maximum Store Longitude:", max(df$Store_Longitude, na.rm = TRUE)))
+print(paste("Minimum Drop Longitude:", min(df$Drop_Longitude, na.rm = TRUE)))
+print(paste("Maximum Drop Longitude:", max(df$Drop_Longitude, na.rm = TRUE)))
+
+# Remove rows where coordinates are exactly zero
+df <- df %>% filter(!(Store_Latitude == 0 & Store_Longitude == 0) & !(Drop_Latitude == 0 & Drop_Longitude == 0))
+
+# Save the cleaned dataset
+write.csv(df_cleaned, "amazondelivery2_cleanedfixedcoordinates.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Reload the saved file to verify corrections
+df_check <- read.csv("amazondelivery2_cleanedfixedcoordinates.csv")
+
+df_check$Store_Latitude <- abs(df_check$Store_Latitude)
+df_check$Drop_Latitude <- abs(df_check$Drop_Latitude)
+
+# Save the file again to enforce absolute values
+write.csv(df_check, "amazondelivery2_cleanedfixedcoordinates.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Reload the saved file to verify corrections
+df_check <- read.csv("amazondelivery2_cleanedfixedcoordinates.csv")
+print(paste("Minimum Store Latitude in Saved File:", min(df_check$Store_Latitude, na.rm = TRUE)))
+print(paste("Minimum Drop Latitude in Saved File:", min(df_check$Drop_Latitude, na.rm = TRUE)))
+```
+

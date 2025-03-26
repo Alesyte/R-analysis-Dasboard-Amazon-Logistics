@@ -1,0 +1,351 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+plot(cars)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+library(shiny)
+library(shinydashboard)
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+library(lubridate)
+library(shinythemes)
+library(scales)
+library(leaflet)
+library(DT)
+library(plotly)
+
+# Load dataset
+df <- read.csv("amazondelivery2_cleaned.csv")
+
+# Ensure correct data types
+df$Order_Date <- as.Date(df$Order_Date, format="%Y-%m-%d")
+df$Order_Hour <- hour(hms(df$Order_Time))
+df$Delivery_Time <- as.numeric(df$Delivery_Time)
+
+df$Traffic <- as.factor(df$Traffic)
+df$Weather <- as.factor(df$Weather)
+df$Vehicle <- as.factor(df$Vehicle)
+df$Area <- as.factor(df$Area)
+
+# Define late deliveries (top 25% of Delivery_Time)
+late_delivery_threshold <- quantile(df$Delivery_Time, 0.75)
+df$Late_Delivery <- ifelse(df$Delivery_Time > late_delivery_threshold, 1, 0)
+
+# Define UI
+ui <- dashboardPage(
+  dashboardHeader(title = "Delivery Analysis Dashboard"),
+  
+  dashboardSidebar(
+    sidebarMenu(id = "sidebar",
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
+      menuItem("Interactive Filters", tabName = "filters", icon = icon("sliders-h"))
+    )
+  ),
+  
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "dashboard",
+              tabsetPanel(id = "tabs",
+                tabPanel("Driver Age & Delivery Time", value = "age_delivery", fluidRow(
+                  column(4, sliderInput("ageRange", "Select Age Range:",
+                                       min = min(df$Agent_Age, na.rm = TRUE),
+                                       max = max(df$Agent_Age, na.rm = TRUE),
+                                       value = range(df$Agent_Age, na.rm = TRUE))),
+                  column(2, actionButton("update", "Update Statistics")),
+                  column(12, plotlyOutput("lineChart")),
+                  column(12, verbatimTextOutput("summaryText"))
+                )),
+                tabPanel("Late Deliveries Heatmap", value = "heatmap", fluidRow(
+                  column(12, plotOutput("heatmapPlot", height = "600px"))
+                )),
+                tabPanel("Predictive LM Analysis", value = "lm_analysis", fluidRow(
+                  column(4, selectInput("traffic", "Traffic Level:", choices = unique(df$Traffic))),
+                  column(4, selectInput("weather", "Weather Condition:", choices = unique(df$Weather))),
+                  column(4, selectInput("vehicle", "Vehicle Type:", choices = unique(df$Vehicle))),
+                  column(4, sliderInput("rating", "Agent Rating:", min = min(df$Agent_Rating), max = max(df$Agent_Rating), value = mean(df$Agent_Rating))),
+                  column(4, selectInput("area", "Delivery Area:", choices = unique(df$Area))),
+                  column(4, sliderInput("order_hour", "Order Hour:", min = 0, max = 23, value = 12)),
+                  column(12, actionButton("predict", "Predict", class = "btn-success")),
+                  column(12, verbatimTextOutput("lm_prediction")),
+                  column(12, verbatimTextOutput("rf_prediction")),
+                  column(12, plotOutput("comparison_plot"))
+                )),
+                  tabPanel("Delivery Insights", value = "insights", 
+                    fluidRow(
+                      column(5, plotOutput("delivery_plot")),
+                      column(7, plotOutput("agent_plot"))
+                    )
+                  ),
+                  tabPanel("Map", value = "map",
+                    fluidRow(
+                      leafletOutput("map")
+                    )
+                  ),
+                  tabPanel("Average Delivery Times according to variables", value = "predictive",
+                    fluidRow(
+                      column(4, dateRangeInput("dateRange", "Select Date Range:",
+                        start = min(df$Order_Date, na.rm = TRUE),
+                        end = max(df$Order_Date, na.rm = TRUE),
+                        format = "yyyy-mm-dd"
+                      )),
+                      column(4, selectInput("category", "Select Category:", 
+                        choices = c("Weather", "Traffic", "Vehicle", "Area", "Category"), 
+                        selected = "Weather"
+                      )),
+                      column(12, plotOutput("barPlot"))
+                    )
+                  )
+                )
+      ),
+      tabItem(tabName = "filters",
+              sidebarPanel(
+                dateRangeInput("date_range", "Select Date Range:",
+                               start = min(df$Order_Date, na.rm = TRUE), 
+                               end = max(df$Order_Date, na.rm = TRUE)),
+                selectInput("traffic", "Traffic Conditions:",
+                            choices = c("All", levels(df$Traffic)), selected = "All", multiple = TRUE),
+                selectInput("weather", "Weather Conditions:",
+                            choices = c("All", levels(df$Weather)), selected = "All", multiple = TRUE),
+                selectInput("age", "Age Group:",
+                            choices = c("All", levels(df$Agent_Age)), selected = "All", multiple = TRUE),
+                selectInput("vehicle", "Vehicle Type:",
+                            choices = c("All", levels(df$Vehicle)), selected = "All", multiple = TRUE),
+                selectInput("area", "Delivery Area:",
+                            choices = c("All", levels(df$Area)), selected = "All", multiple = TRUE)
+              )
+      )
+    )
+  )
+)
+
+# Define Server
+server <- function(input, output) {
+  # Reactive Data Filtering
+  filtered_data <- reactive({
+    data <- df %>%
+      filter(Order_Date >= input$date_range[1], Order_Date <= input$date_range[2])
+    
+    if (!("All" %in% input$traffic)) {
+      data <- data %>% filter(Traffic %in% input$traffic)
+    }
+    if (!("All" %in% input$weather)) {
+      data <- data %>% filter(Weather %in% input$weather)
+    }
+    if (!("All" %in% input$vehicle)) {
+      data <- data %>% filter(Vehicle %in% input$vehicle)
+    }
+    
+    return(data)
+  })
+
+  # Apply age filtering separately inside the render functions
+  output$summaryText <- renderText({
+    data <- filtered_data() %>%
+      filter(Agent_Age >= input$ageRange[1], Agent_Age <= input$ageRange[2])
+    
+    summary_stats <- data %>% group_by(Agent_Age) %>% summarise(
+      Q1 = quantile(Delivery_Time, 0.25, na.rm = TRUE),
+      Avg_Delivery_Time = mean(Delivery_Time, na.rm = TRUE),
+      Q3 = quantile(Delivery_Time, 0.75, na.rm = TRUE)
+    )
+
+    paste(
+      "Statistics by Age Group:\n",
+      paste(summary_stats$Agent_Age, ": Q1 =", summary_stats$Q1, ", Avg =", round(summary_stats$Avg_Delivery_Time, 2), ", Q3 =", summary_stats$Q3, collapse = "\n")
+    )
+  })
+
+  output$lineChart <- renderPlotly({
+    data <- filtered_data() %>%
+      filter(Agent_Age >= input$ageRange[1], Agent_Age <= input$ageRange[2]) %>%
+      group_by(Agent_Age) %>%
+      summarise(
+        Q1 = quantile(Delivery_Time, 0.25, na.rm = TRUE),
+        Avg = mean(Delivery_Time, na.rm = TRUE),
+        Q3 = quantile(Delivery_Time, 0.75, na.rm = TRUE)
+      )
+
+    df_summary <- data %>%
+      tidyr::pivot_longer(cols = c(Q1, Avg, Q3), names_to = "Statistic", values_to = "Value")
+
+    gg <- ggplot(df_summary, aes(x = Agent_Age, y = Value, color = Statistic, group = Statistic)) +
+      geom_line(size = 1) +
+      geom_point(size = 3) +
+      labs(title = "Delivery Time by Age Group", x = "Agent Age", y = "Delivery Time") +
+      theme_minimal()
+
+    ggplotly(gg)
+  })
+
+  # Other visualizations using filtered_data()
+  output$delivery_plot <- renderPlot({
+    ggplot(filtered_data(), aes(x=Traffic, y=Delivery_Time, fill=Traffic)) +
+      geom_boxplot() +
+      theme_minimal() +
+      labs(title="Delivery Time vs Traffic Condition", x="Traffic", y="Delivery Time (min)")
+  })
+
+  output$density_plot <- renderPlotly({
+    p <- ggplot(filtered_data(), aes(x=Delivery_Time)) +
+      geom_density(fill="blue", alpha=0.5) +
+      theme_minimal() +
+      labs(title="Delivery Time Distribution", x="Delivery Time (min)", y="Density")
+    
+    ggplotly(p)
+  })
+  
+  output$agent_plot <- renderPlot({
+    ggplot(filtered_data(), aes(x=Agent_Rating, y=Delivery_Time, color=Agent_Age)) +
+      geom_point(alpha=0.6) +
+      theme_minimal() +
+      labs(title="Agent Performance: Rating vs Delivery Time", x="Agent Rating", y="Delivery Time (min)")
+  })
+  
+     output$barPlot <- renderPlot({
+    data_filtered <- filtered_data()
+    
+    summary_data <- data_filtered %>%
+      group_by_at(input$category) %>%
+      summarise(Average_Time = mean(Delivery_Time, na.rm = TRUE))
+    
+    ggplot(summary_data, aes_string(x = input$category, y = "Average_Time", fill = input$category)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = round(Average_Time, 1)), vjust = -0.5, size = 5) +
+      theme_minimal() +
+      labs(title = paste("Average Delivery Time by", input$category),
+           x = input$category,
+           y = "Average Delivery Time (mins)") +
+      scale_y_continuous(labels = comma) +
+      theme(legend.position = "none")
+  })
+     
+    output$traffic_bar_chart <- renderPlotly({
+    p <- ggplot(filtered_data(), aes(x=Traffic, fill=Traffic)) +
+      geom_bar() +
+      theme_minimal() +
+      labs(title="Traffic Impact on Deliveries", x="Traffic Condition", y="Count")
+    
+    ggplotly(p)
+  })
+  
+  output$weather_pie_chart <- renderPlotly({
+    plot_ly(filtered_data(), labels = ~Weather, values = ~Delivery_Time, type = "pie",
+            textinfo = "label+percent", hole = 0.4) %>%
+      layout(title = "Weather Influence on Delivery Time")
+  })
+  
+  output$density_plot <- renderPlotly({
+    p <- ggplot(filtered_data(), aes(x=Delivery_Time)) +
+      geom_density(fill="blue", alpha=0.5) +
+      theme_minimal() +
+      labs(title="Delivery Time Distribution", x="Delivery Time (min)", y="Density")
+    
+    ggplotly(p)
+  })
+
+  output$heatmapPlot <- renderPlot({
+    data <- filtered_data() %>%
+      group_by(Weather, Traffic, Area, Vehicle) %>%
+      summarise(Late_Percentage = mean(Late_Delivery) * 100) %>%
+      na.omit()
+
+    ggplot(data, aes(x = Traffic, y = Weather, fill = Late_Percentage)) +
+      geom_tile(color = "white") +
+      scale_fill_gradient(low = "green", high = "red") +
+      theme_minimal() +
+      facet_grid(Area ~ Vehicle) +
+      labs(title = "High-Risk Orders (% Late Deliveries) by Weather, Traffic, Area, and Vehicle",
+           x = "Traffic Condition", y = "Weather Condition", fill = "% Late Deliveries") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
+
+  output$map <- renderLeaflet({
+    leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = runif(10, -122.3, -122.0), lat = runif(10, 37.7, 37.9), popup = "Delivery Point")
+  })
+
+  output$barPlot <- renderPlot({
+    data_filtered <- filtered_data()
+
+    summary_data <- data_filtered %>%
+      group_by_at(input$category) %>%
+      summarise(Average_Time = mean(Delivery_Time, na.rm = TRUE))
+
+    ggplot(summary_data, aes_string(x = input$category, y = "Average_Time", fill = input$category)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = round(Average_Time, 1)), vjust = -0.5, size = 5) +
+      theme_minimal() +
+      labs(title = paste("Average Delivery Time by", input$category),
+           x = input$category,
+           y = "Average Delivery Time (mins)") +
+      scale_y_continuous(labels = comma) +
+      theme(legend.position = "none")
+  })
+  observeEvent(input$predict, {
+    new_data <- data.frame(
+      Traffic = factor(input$traffic, levels = levels(df$Traffic)),
+      Weather = factor(input$weather, levels = levels(df$Weather)),
+      Vehicle = factor(input$vehicle, levels = levels(df$Vehicle)),
+      Agent_Rating = as.numeric(input$rating),
+      Area = factor(input$area, levels = levels(df$Area)),
+      Order_Hour = as.numeric(input$order_hour)
+    )
+    
+    # Predictions
+    lm_pred <- predict(lm_model, new_data)
+    rf_pred <- predict(rf_model, new_data)
+    
+    output$lm_prediction <- renderText({
+      paste("📉 Linear Regression Prediction: ", round(lm_pred, 2), " minutes")
+    })
+    
+    output$rf_prediction <- renderText({
+      paste("🌳 Random Forest Prediction: ", round(rf_pred, 2), " minutes")
+    })
+  })
+  
+  # Actual vs Predicted Plot
+  output$comparison_plot <- renderPlot({
+    test_data$lm_pred <- predict(lm_model, test_data)
+    test_data$rf_pred <- predict(rf_model, test_data)
+    
+    ggplot(test_data, aes(x = Delivery_Time)) +
+      geom_point(aes(y = lm_pred, color = "Linear Regression"), alpha = 0.5) +
+      geom_point(aes(y = rf_pred, color = "Random Forest"), alpha = 0.5) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+      labs(title = "Actual vs Predicted Delivery Time",
+           x = "Actual Delivery Time",
+           y = "Predicted Delivery Time") +
+      theme_minimal() +
+      scale_color_manual(name = "Model", values = c("Linear Regression" = "blue", "Random Forest" = "red"))
+  })
+}
+
+
+
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
+
+```
+
+
+
